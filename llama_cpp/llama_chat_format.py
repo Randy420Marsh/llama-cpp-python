@@ -1398,7 +1398,7 @@ def format_saiga(
     return ChatFormatterResponse(prompt=_prompt.strip())
 
 
-# Chat format for Google's Gemma models, see more details and available models:
+# Chat format for Google's Gemma models (Gemma 2 and Gemma 3), see more details and available models:
 # https://huggingface.co/collections/google/gemma-release-65d5efbccdbb8c4202ec078b
 @register_chat_format("gemma")
 def format_gemma(
@@ -1416,6 +1416,72 @@ def format_gemma(
     _messages.append((_roles["assistant"], None))
     _prompt = _format_no_colon_single(system_message="", messages=_messages, sep=_sep)
     return ChatFormatterResponse(prompt=_prompt, stop=_sep)
+
+
+# Chat format for Google's Gemma 4 models, see more details:
+# https://huggingface.co/google/gemma-4-E2B-it
+# https://ai.google.dev/gemma/docs/core/prompt-structure
+# Gemma 4 introduces new special tokens and native system role support
+@register_chat_format("gemma4")
+def format_gemma4(
+    messages: List[llama_types.ChatCompletionRequestMessage],
+    **kwargs: Any,
+) -> ChatFormatterResponse:
+    """Format messages for Gemma 4 models using the new <|turn> and <turn|> tokens.
+    
+    Gemma 4 introduces:
+    - Native system role support via <|channel>thought\n ... <channel|>\n
+    - New turn-based tokens: <|turn>, <turn|>, <|channel>, <channel|>
+    - Thinking mode support via <|think|> token
+    - Tool calling support via <|tool_call>, <tool_call|>, etc.
+    
+    This is a simplified formatter that handles basic text-only conversations.
+    For full multimodal and tool calling support, use the Gemma4ChatHandler class.
+    
+    Special tokens:
+    - <bos>: Beginning of sequence
+    - <|turn>: Start of turn
+    - <turn|>: End of turn
+    - <|channel>: Start of channel
+    - <channel|>: End of channel
+    - <|think|>: Thinking mode indicator
+    - <|tool_call>: Start of tool call
+    - <tool_call|>: End of tool call
+    """
+    _bos_token = "<bos>"
+    _turn_start = "<|turn>"
+    _turn_end = "<turn|>\n"
+    _channel_start = "<|channel>"
+    _channel_end = "<channel|>\n"
+    
+    _prompt = _bos_token
+    
+    # Check for system message - in Gemma 4, system messages go in a thought channel
+    system_message = _get_system_message(messages)
+    if system_message:
+        _prompt += f"{_channel_start}thought\n{system_message}{_channel_end}"
+    
+    # Format conversation turns
+    for message in messages:
+        role = message["role"]
+        content = message.get("content", "")
+        
+        # Skip system messages as they're handled separately
+        if role == "system":
+            continue
+        
+        # Map role to Gemma 4 role names
+        if role == "assistant":
+            gemma_role = "model"
+        else:
+            gemma_role = role
+        
+        _prompt += f"{_turn_start}{gemma_role}\n{content}{_turn_end}"
+    
+    # Add generation prompt
+    _prompt += f"{_turn_start}model\n"
+    
+    return ChatFormatterResponse(prompt=_prompt, stop=[_turn_end, "<channel|>", "<turn|>"])
 
 
 # Tricky chat formats that require custom chat handlers
@@ -3671,6 +3737,80 @@ class MultimodalGemmaChatHandler(Llava15ChatHandler):
         "{% endfor %}"
         "{% if add_generation_prompt %}"
         "<start_of_turn>model\n"
+        "{% endif %}"
+    )
+
+
+class Gemma4ChatHandler(Llava15ChatHandler):
+    """Chat handler for Gemma 4 models with full multimodal and tool calling support.
+    
+    Gemma 4 introduces new special tokens and native system role support:
+    - <|turn>: Start of turn
+    - <turn|>: End of turn  
+    - <|channel>: Start of channel (for system/thought messages)
+    - <channel|>: End of channel
+    - <|think|>: Thinking mode indicator
+    - <|tool_call>: Start of tool call
+    - <tool_call|>: End of tool call
+    - <|tool_response|>: Tool response marker
+    
+    See: https://ai.google.dev/gemma/docs/core/prompt-structure
+    See: https://huggingface.co/google/gemma-4-E2B-it
+    """
+    
+    DEFAULT_SYSTEM_MESSAGE: Optional[str] = None
+    
+    CHAT_FORMAT = (
+        "{% for message in messages %}"
+        # System messages go in a thought channel
+        "{% if message.role == 'system' %}"
+        "<|channel>thought\n{{ message.content }}<channel|>\n"
+        "{% endif %}"
+        # User message (handles both plain string and multimodal content list)
+        "{% if message.role == 'user' %}"
+        "<|turn>user\n"
+        "{% if message.content is string %}"
+        "{{ message.content }}"
+        "{% endif %}"
+        "{% if message.content is iterable and message.content is not string %}"
+        # Emit image tokens first
+        "{% for content in message.content %}"
+        "{% if content.type == 'image_url' and content.image_url is string %}"
+        "{{ content.image_url }}"
+        "{% endif %}"
+        "{% if content.type == 'image_url' and content.image_url is mapping %}"
+        "{{ content.image_url.url }}"
+        "{% endif %}"
+        "{% endfor %}"
+        # Then emit text tokens
+        "{% for content in message.content %}"
+        "{% if content.type == 'text' %}"
+        "{{ content.text }}"
+        "{% endif %}"
+        "{% endfor %}"
+        "{% endif %}"
+        "<turn|>\n"
+        "{% endif %}"
+        # Assistant message
+        "{% if message.role == 'assistant' and message.content is not none %}"
+        "<|turn>model\n{{ message.content }}<turn|>\n"
+        "{% endif %}"
+        # Tool calls in assistant messages
+        "{% if message.role == 'assistant' and message.tool_calls %}"
+        "<|turn>model\n"
+        "{% for tool_call in message.tool_calls %}"
+        "<|tool_call>{{ tool_call.function.name }}:{{ tool_call.function.arguments }}<tool_call|>\n"
+        "{% endfor %}"
+        "<turn|>\n"
+        "{% endif %}"
+        # Tool responses
+        "{% if message.role == 'tool' %}"
+        "<|tool_response>{{ message.content }}<tool_response|>\n"
+        "{% endif %}"
+        "{% endfor %}"
+        # Generation prompt
+        "{% if add_generation_prompt %}"
+        "<|turn>model\n"
         "{% endif %}"
     )
 
