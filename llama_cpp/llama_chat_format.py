@@ -607,6 +607,7 @@ def chat_formatter_to_chat_completion_handler(
         logit_bias: Optional[Dict[str, float]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
+        reasoning_budget: Optional[int] = None,
         **kwargs,  # type: ignore
     ) -> Union[
         llama_types.CreateChatCompletionResponse,
@@ -618,6 +619,7 @@ def chat_formatter_to_chat_completion_handler(
             function_call=function_call,
             tools=tools,
             tool_choice=tool_choice,
+            reasoning_budget=reasoning_budget,
             **kwargs,
         )
         prompt = llama.tokenize(
@@ -1403,6 +1405,7 @@ def format_saiga(
 @register_chat_format("gemma")
 def format_gemma(
     messages: List[llama_types.ChatCompletionRequestMessage],
+    reasoning_budget: Optional[int] = None,
     **kwargs: Any,
 ) -> ChatFormatterResponse:
     system_message = _get_system_message(messages)
@@ -1425,6 +1428,7 @@ def format_gemma(
 @register_chat_format("gemma4")
 def format_gemma4(
     messages: List[llama_types.ChatCompletionRequestMessage],
+    reasoning_budget: Optional[int] = None,
     **kwargs: Any,
 ) -> ChatFormatterResponse:
     """Format messages for Gemma 4 models using the new <|turn> and <turn|> tokens.
@@ -1447,6 +1451,11 @@ def format_gemma4(
     - <|think|>: Thinking mode indicator
     - <|tool_call>: Start of tool call
     - <tool_call|>: End of tool call
+    
+    Args:
+        messages: List of chat completion messages
+        reasoning_budget: Maximum number of tokens for thinking/reasoning (Gemma 4 feature)
+        **kwargs: Additional keyword arguments
     """
     _bos_token = "<bos>"
     _turn_start = "<|turn>"
