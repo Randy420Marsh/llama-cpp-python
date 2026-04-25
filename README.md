@@ -2,6 +2,8 @@
   <img src="https://raw.githubusercontent.com/abetlen/llama-cpp-python/main/docs/icon.svg" style="height: 5rem; width: 5rem">
 </p>
 
+## Unofficial custom fork meant for https://github.com/Randy420Marsh/VisionLLMCaptioner and gemma 4
+
 #  Python Bindings for [`llama.cpp`](https://github.com/ggerganov/llama.cpp)
 
 [![Documentation Status](https://readthedocs.org/projects/llama-cpp-python/badge/?version=latest)](https://llama-cpp-python.readthedocs.io/en/latest/?badge=latest)

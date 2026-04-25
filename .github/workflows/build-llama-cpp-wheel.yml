@@ -1,0 +1,99 @@
+name: Build llama-cpp-python Wheel (CUDA 12.8)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    container:
+      image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+    steps:
+      - name: Install Git (required for submodules)
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Python 3.11 + build tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          TZ: Etc/UTC
+        run: |
+          apt-get update
+          apt-get install -y software-properties-common tzdata
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y \
+            python3.11 \
+            python3.11-venv \
+            python3.11-dev \
+            git \
+            cmake \
+            build-essential \
+            pkg-config \
+            libopenblas-dev
+          python3.11 -m ensurepip --upgrade
+          python3.11 -m pip install --upgrade pip wheel setuptools
+
+      - name: Use Python 3.11
+        run: |
+          update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+          update-alternatives --set python /usr/bin/python3.11
+          python --version
+
+      - name: Set CUDA environment
+        run: |
+          echo "CUDA_HOME=/usr/local/cuda" >> $GITHUB_ENV
+          echo "PATH=/usr/local/cuda/bin:$PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> $GITHUB_ENV
+
+      - name: Verify CUDA installation
+        run: |
+          set -e
+          ls -la /usr/local/cuda* || (echo "ERROR: CUDA not found!" && exit 1)
+          which nvcc || (echo "ERROR: nvcc not found!" && exit 1)
+          nvcc --version
+          echo "CUDA verified successfully at: $(which nvcc)"
+
+      - name: Build wheel with all architectures
+        env:
+          CMAKE_ARGS: >
+            -DGGML_CUDA=ON
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90"
+            -DGGML_NATIVE=OFF
+            -DLLAMA_BUILD_EXAMPLES=OFF
+            -DLLAMA_BUILD_TESTS=OFF
+            -DLLAMA_BUILD_SERVER=OFF
+          FORCE_CMAKE: 1
+        run: |
+          python -m pip wheel . --no-deps -w dist -v
+
+      - name: Upload wheel as artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-python-cuda12.8-all-arch
+          path: dist/*.whl
+          retention-days: 30
+
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: dist/*.whl
+          draft: false
+          prerelease: false
+          generate_release_notes: true

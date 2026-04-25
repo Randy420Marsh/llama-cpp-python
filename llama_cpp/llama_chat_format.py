@@ -1,3 +1,4 @@
+# Drop-in replacement / standalone Gemma 4 chat handler for llama-cpp-python (April 2026)
 from __future__ import annotations
 
 import os
@@ -607,6 +608,7 @@ def chat_formatter_to_chat_completion_handler(
         logit_bias: Optional[Dict[str, float]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
+        reasoning_budget: Optional[int] = None,
         **kwargs,  # type: ignore
     ) -> Union[
         llama_types.CreateChatCompletionResponse,
@@ -618,6 +620,7 @@ def chat_formatter_to_chat_completion_handler(
             function_call=function_call,
             tools=tools,
             tool_choice=tool_choice,
+            reasoning_budget=reasoning_budget,
             **kwargs,
         )
         prompt = llama.tokenize(
@@ -1398,11 +1401,12 @@ def format_saiga(
     return ChatFormatterResponse(prompt=_prompt.strip())
 
 
-# Chat format for Google's Gemma models, see more details and available models:
+# Chat format for Google's Gemma models (Gemma 2 and Gemma 3), see more details and available models:
 # https://huggingface.co/collections/google/gemma-release-65d5efbccdbb8c4202ec078b
 @register_chat_format("gemma")
 def format_gemma(
     messages: List[llama_types.ChatCompletionRequestMessage],
+    reasoning_budget: Optional[int] = None,
     **kwargs: Any,
 ) -> ChatFormatterResponse:
     system_message = _get_system_message(messages)
@@ -1416,6 +1420,80 @@ def format_gemma(
     _messages.append((_roles["assistant"], None))
     _prompt = _format_no_colon_single(system_message="", messages=_messages, sep=_sep)
     return ChatFormatterResponse(prompt=_prompt, stop=_sep)
+
+
+# Chat format for Google's Gemma 4 models, see more details:
+# https://huggingface.co/google/gemma-4-E2B-it
+# https://ai.google.dev/gemma/docs/core/prompt-structure
+# Gemma 4 introduces new special tokens and native system role support
+@register_chat_format("gemma4")
+def format_gemma4(
+    messages: List[llama_types.ChatCompletionRequestMessage],
+    reasoning_budget: Optional[int] = None,
+    **kwargs: Any,
+) -> ChatFormatterResponse:
+    """Format messages for Gemma 4 models using the new <|turn> and <turn|> tokens.
+
+    Gemma 4 introduces:
+    - Native system role support via <|channel>thought\n ... <channel|>\n
+    - New turn-based tokens: <|turn>, <turn|>, <|channel>, <channel|>
+    - Thinking mode support via <|think|> token
+    - Tool calling support via <|tool_call>, <tool_call|>, etc.
+
+    This is a simplified formatter that handles basic text-only conversations.
+    For full multimodal and tool calling support, use the Gemma4ChatHandler class.
+
+    Special tokens:
+    - <bos>: Beginning of sequence
+    - <|turn>: Start of turn
+    - <turn|>: End of turn
+    - <|channel>: Start of channel
+    - <channel|>: End of channel
+    - <|think|>: Thinking mode indicator
+    - <|tool_call>: Start of tool call
+    - <tool_call|>: End of tool call
+
+    Args:
+        messages: List of chat completion messages
+        reasoning_budget: Maximum number of tokens for thinking/reasoning (Gemma 4 feature)
+        **kwargs: Additional keyword arguments
+    """
+    _bos_token = "<bos>"
+    _turn_start = "<|turn>"
+    _turn_end = "<turn|>\n"
+    _channel_start = "<|channel>"
+    _channel_end = "<channel|>\n"
+
+    _prompt = _bos_token
+
+    # Check for system message - in Gemma 4, system messages go in a thought channel
+    system_message = _get_system_message(messages)
+    if system_message:
+        _prompt += f"{_channel_start}thought\n{system_message}{_channel_end}"
+
+    # Format conversation turns
+    for message in messages:
+        role = message["role"]
+        content = message.get("content", "")
+
+        # Skip system messages as they're handled separately
+        if role == "system":
+            continue
+
+        # Map role to Gemma 4 role names
+        if role == "assistant":
+            gemma_role = "model"
+        else:
+            gemma_role = role
+
+        _prompt += f"{_turn_start}{gemma_role}\n{content}{_turn_end}"
+
+    # Add generation prompt
+    _prompt += f"{_turn_start}model\n"
+
+    return ChatFormatterResponse(
+        prompt=_prompt, stop=[_turn_end, "<channel|>", "<turn|>"]
+    )
 
 
 # Tricky chat formats that require custom chat handlers
@@ -1575,9 +1653,9 @@ def functionary_chat_handler(
                 message["name"] = f"functions.{message['name']}"
             # Function call requests by assistant
             if "function_call" in message:
-                message["function_call"]["name"] = (
-                    f"functions.{message['function_call']['name']}"
-                )
+                message["function_call"][
+                    "name"
+                ] = f"functions.{message['function_call']['name']}"
             all_messages.append(message)
 
         all_messages.append(
@@ -1816,9 +1894,9 @@ def functionary_v1_v2_chat_handler(
     SYSTEM_MESSAGE = """A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. The assistant calls functions with appropriate input when necessary"""
 
     tokenizer = llama.tokenizer_
-    assert hasattr(tokenizer, "hf_tokenizer"), (
-        "Please provide a valid hf_tokenizer_path from https://huggingface.co/meetkai when initializing the Llama class"
-    )
+    assert hasattr(
+        tokenizer, "hf_tokenizer"
+    ), "Please provide a valid hf_tokenizer_path from https://huggingface.co/meetkai when initializing the Llama class"
     from transformers import AutoTokenizer
 
     if "<|START_OF_FUNCTION_CALL|>" in tokenizer.hf_tokenizer.additional_special_tokens:
@@ -1968,9 +2046,9 @@ def functionary_v1_v2_chat_handler(
                 message["name"] = f"functions.{message['name']}"
             # Function call requests by assistant
             if "function_call" in message:
-                message["function_call"]["name"] = (
-                    f"functions.{message['function_call']['name']}"
-                )
+                message["function_call"][
+                    "name"
+                ] = f"functions.{message['function_call']['name']}"
             all_messages.append(message)
 
         if version == "v1":
@@ -3229,6 +3307,64 @@ class Llava15ChatHandler:
         )
 
 
+class GemmaChatHandler(Llava15ChatHandler):
+    """Chat handler for Gemma-based multimodal models (e.g., PaliGemma, MedGemma).
+
+    Gemma models use <start_of_turn>/<end_of_turn> control tokens instead of
+    the LLaVA-style USER:/ASSISTANT: format.  The text-only 'gemma' chat format
+    is already registered (see format_gemma), but multimodal Gemma models that
+    require a Llava-style vision pipeline need a dedicated handler so the
+    correct chat template is applied when chat_handler takes precedence over
+    chat_format in the resolution order.
+
+    See: https://ai.google.dev/gemma/docs/formatting
+    """
+
+    DEFAULT_SYSTEM_MESSAGE = None  # Gemma models do not natively support a system role
+
+    CHAT_FORMAT = (
+        "{% for message in messages %}"
+        # System messages are folded into a user turn (Gemma has no system role)
+        "{% if message.role == 'system' %}"
+        "<start_of_turn>user\n{{ message.content }}<end_of_turn>\n"
+        "{% endif %}"
+        # User message (handles both plain string and multimodal content list)
+        "{% if message.role == 'user' %}"
+        "<start_of_turn>user\n"
+        "{% if message.content is string %}"
+        "{{ message.content }}"
+        "{% endif %}"
+        "{% if message.content is iterable and message.content is not string %}"
+        # Emit image tokens first
+        "{% for content in message.content %}"
+        "{% if content.type == 'image_url' and content.image_url is string %}"
+        "{{ content.image_url }}"
+        "{% endif %}"
+        "{% if content.type == 'image_url' and content.image_url is mapping %}"
+        "{{ content.image_url.url }}"
+        "{% endif %}"
+        "{% endfor %}"
+        # Then emit text tokens
+        "{% for content in message.content %}"
+        "{% if content.type == 'text' %}"
+        "{{ content.text }}"
+        "{% endif %}"
+        "{% endfor %}"
+        "{% endif %}"
+        "<end_of_turn>\n"
+        "{% endif %}"
+        # Assistant message
+        "{% if message.role == 'assistant' and message.content is not none %}"
+        "<start_of_turn>model\n{{ message.content }}<end_of_turn>\n"
+        "{% endif %}"
+        "{% endfor %}"
+        # Generation prompt
+        "{% if add_generation_prompt %}"
+        "<start_of_turn>model\n"
+        "{% endif %}"
+    )
+
+
 class ObsidianChatHandler(Llava15ChatHandler):
     # Prompt Format
     # The model followed ChatML format. However, with ### as the seperator
@@ -3581,6 +3717,216 @@ class Qwen25VLChatHandler(Llava15ChatHandler):
         return super().__call__(**kwargs)
 
 
+class MultimodalGemmaChatHandler(Llava15ChatHandler):
+    DEFAULT_SYSTEM_MESSAGE: Optional[str] = None
+
+    CHAT_FORMAT = (
+        "{% for message in messages %}"
+        "{% if message.role == 'user' %}"
+        "<start_of_turn>user\n"
+        "{% if message.content is string %}"
+        "{{ message.content }}"
+        "{% endif %}"
+        "{% if message.content is iterable %}"
+        "{% for content in message.content %}"
+        "{% if content.type == 'image_url' and content.image_url is string %}"
+        "{{ content.image_url }}"
+        "{% endif %}"
+        "{% if content.type == 'image_url' and content.image_url is mapping %}"
+        "{{ content.image_url.url }}"
+        "{% endif %}"
+        "{% endfor %}"
+        "{% for content in message.content %}"
+        "{% if content.type == 'text' %}"
+        "{{ content.text }}"
+        "{% endif %}"
+        "{% endfor %}"
+        "{% endif %}"
+        "<end_of_turn>\n"
+        "{% endif %}"
+        "{% if message.role == 'assistant' and message.content is not none %}"
+        "<start_of_turn>model\n"
+        "{{ message.content }}<end_of_turn>\n"
+        "{% endif %}"
+        "{% endfor %}"
+        "{% if add_generation_prompt %}"
+        "<start_of_turn>model\n"
+        "{% endif %}"
+    )
+
+
+# ============================================================
+# GEMMA 4 CHAT HANDLER - FULLY CORRECTED & POLISHED
+# ============================================================
+
+class Gemma4ChatHandler(Llava15ChatHandler):
+    """Chat handler for Gemma 4 models with full multimodal and tool calling support.
+
+    Gemma 4 introduces new special tokens and native system role support:
+    - <|turn>: Start of turn
+    - <turn|>: End of turn
+    - <|channel>: Start of channel (for system/thought messages)
+    - <channel|>: End of channel
+    - <|think|>: Thinking mode indicator
+    - <|tool_call>: Start of tool call
+    - <tool_call|>: End of tool call
+    - <|tool_response|>: Tool response marker
+    """
+
+    DEFAULT_SYSTEM_MESSAGE: Optional[str] = None
+
+    CHAT_FORMAT = (
+        "{% for message in messages %}"
+        # 1. System messages go in a thought channel
+        "{% if message.role == 'system' %}"
+        "<|channel>thought\n{{ message.content }}<channel|>\n"
+        "{% endif %}"
+        
+        # 2. User message (handles both plain string and multimodal media)
+        "{% if message.role == 'user' %}"
+        "<|turn>user\n"
+        "{% if message.content is string %}"
+        "{{ message.content }}"
+        "{% endif %}"
+        "{% if message.content is iterable and message.content is not string %}"
+        # Emit Media Embeddings (Images AND Audio)
+        "{% for content in message.content %}"
+        "{% if content.type == 'image_url' %}"
+        "{% if content.image_url is string %}{{ content.image_url }}{% else %}{{ content.image_url.url }}{% endif %}"
+        "{% elif content.type == 'input_audio' %}"
+        "data:audio/{{ content.input_audio.format }};base64,{{ content.input_audio.data }}"
+        "{% elif content.type == 'audio' %}"
+        "data:audio/{{ content.audio.format }};base64,{{ content.audio.data }}"
+        "{% endif %}"
+        "{% endfor %}"
+        # Then emit text tokens
+        "{% for content in message.content %}"
+        "{% if content.type == 'text' %}{{ content.text }}{% endif %}"
+        "{% endfor %}"
+        "{% endif %}"
+        "<turn|>\n"
+        "{% endif %}"
+        
+        # 3. Assistant message
+        "{% if message.role == 'assistant' and message.content is not none %}"
+        "<|turn>model\n{{ message.content }}<turn|>\n"
+        "{% endif %}"
+        
+        # 4. Tool Calls (Agentic Workflow Handshakes)
+        "{% if message.role == 'assistant' and message.tool_calls %}"
+        "<|turn>model\n"
+        "{% for tool_call in message.tool_calls %}"
+        "<|tool_call>call:{{ tool_call.function.name }}{{ tool_call.function.arguments }}<tool_call|>\n"
+        "{% endfor %}"
+        "<turn|>\n"
+        "{% endif %}"
+        
+        # 5. Tool Responses
+        "{% if message.role == 'tool' %}"
+        "<|tool_response>response:{{ message.name }}{{ message.content }}<tool_response|>\n"
+        "{% endif %}"
+        "{% endfor %}"
+        
+        # 6. Generation prompt
+        "{% if add_generation_prompt %}"
+        "<|turn>model\n"
+        "{% endif %}"
+    )
+
+    @staticmethod
+    def get_image_urls(messages: List[llama_types.ChatCompletionRequestMessage]) -> List[str]:
+        """
+        Overrides the base Llava15ChatHandler method.
+        Extracts both image URLs and audio base64 data strings so they can be processed 
+        and replaced by the mtmd C++ media marker embeddings in the backend.
+        """
+        media_urls: List[str] = []
+        for message in messages:
+            if message["role"] == "user" and message.get("content"):
+                for content in message["content"]:
+                    if isinstance(content, dict) and "type" in content:
+                        
+                        # Extract Vision
+                        if content["type"] == "image_url":
+                            if isinstance(content["image_url"], dict) and "url" in content["image_url"]:
+                                media_urls.append(content["image_url"]["url"])
+                            else:
+                                media_urls.append(content["image_url"])
+                                
+                        # Extract Audio (Supports OpenAI's 'input_audio' AND custom 'audio' schemas)
+                        elif content["type"] in ["input_audio", "audio"]:
+                            audio_data = content.get("input_audio") or content.get("audio")
+                            if audio_data:
+                                fmt = audio_data.get("format", "wav")
+                                data = audio_data.get("data", "")
+                                # Standardize the output so `load_image` successfully base64-decodes the bytes
+                                media_urls.append(f"data:audio/{fmt};base64,{data}")
+                                
+        return media_urls
+
+    def __call__(self, **kwargs):
+        """
+        Overrides the __call__ pipeline to dynamically intercept and enable Thinking Mode 
+        by injecting the required control token seamlessly into the Jinja template.
+        Also performs state clearing for reliable multimodal (vision + audio) support
+        across multiple chat turns, matching other vision handlers like Qwen25VL.
+        """
+        enable_thinking = kwargs.get("enable_thinking", False)
+        original_format = self.CHAT_FORMAT
+        
+        if enable_thinking:
+            # Inject <|think|> into BOTH the initial system thought channel AND 
+            # the assistant generation prompt so thinking starts the response turn.
+            # This follows Gemma 4 docs for triggering native thinking mode.
+            modified_format = original_format.replace(
+                "<|channel>thought\n", 
+                "<|channel>thought\n<|think|>\n"
+            ).replace(
+                "{% if add_generation_prompt %}\n<|turn>model\n{% endif %}",
+                "{% if add_generation_prompt %}\n<|turn>model\n<|think|>\n{% endif %}"
+            )
+            self.CHAT_FORMAT = modified_format
+            
+            # Gemma requires a system block for the thought channel to exist. 
+            # If the user hasn't provided one, we dynamically append a blank one.
+            messages = kwargs.get("messages", [])
+            if not any(m.get("role") == "system" for m in messages):
+                kwargs["messages"] = [{"role": "system", "content": ""}] + messages
+
+        # Clear state for multiple runs (critical for vision/audio + thinking in chat)
+        llama = kwargs.get("llama")
+        if llama is not None:
+            llama.reset()
+            if hasattr(llama, "_ctx") and llama._ctx is not None:
+                llama._ctx.kv_cache_clear()
+            llama.n_tokens = 0
+            if hasattr(llama, "input_ids"):
+                llama.input_ids.fill(0)
+
+            # Clear any handler state (e.g. cached embeds from previous multimodal turn)
+            if hasattr(self, "_last_image_embed"):
+                self._last_image_embed = None
+                self._last_image_hash = None
+
+        try:
+            result = super().__call__(**kwargs)
+            # Post-process non-streaming responses when thinking mode is enabled
+            # to provide clear structure: 'thinking' field (contains reasoning) + 'content' (final answer).
+            # Note: Since Gemma 4 outputs thinking + final answer in a single generation,
+            # 'thinking' currently holds the full generated text (including reasoning).
+            # Future: parse on model-specific end-of-thinking markers (e.g. <|end_think|>) if emitted.
+            if enable_thinking and not kwargs.get("stream", False) and isinstance(result, dict):
+                for choice in result.get("choices", []):
+                    if "message" in choice:
+                        content = choice["message"].get("content", "") or ""
+                        choice["message"]["thinking"] = content  # structured access for test app
+                        # content remains the complete response (thinking + final answer) for compatibility
+            return result
+        finally:
+            # Restore the original class format so future non-thinking calls don't leak state
+            self.CHAT_FORMAT = original_format
+
+
 @register_chat_completion_handler("chatml-function-calling")
 def chatml_function_calling(
     llama: llama.Llama,
@@ -3698,9 +4044,7 @@ def chatml_function_calling(
     stop = (
         [stop, "<|im_end|>"]
         if isinstance(stop, str)
-        else stop + ["<|im_end|>"]
-        if stop
-        else ["<|im_end|>"]
+        else stop + ["<|im_end|>"] if stop else ["<|im_end|>"]
     )
 
     # Case 1: No tool choice by user

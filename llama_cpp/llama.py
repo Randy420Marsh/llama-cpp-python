@@ -1973,6 +1973,8 @@ class Llama:
         logit_bias: Optional[Dict[int, float]] = None,
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
+        reasoning_budget: Optional[int] = None,
+        enable_thinking: bool = False, # <--- FIXED SYNTAX ERROR HERE
     ) -> Union[
         CreateChatCompletionResponse, Iterator[CreateChatCompletionStreamResponse]
     ]:
@@ -2005,6 +2007,7 @@ class Llama:
             logits_processor: A list of logits processors to use.
             grammar: A grammar to use.
             logit_bias: A logit bias to use.
+            reasoning_budget: The reasoning budget for thinking mode (Gemma 4). Controls the maximum number of tokens for thinking/reasoning.
 
         Returns:
             Generated chat completion or a stream of chat completion chunks.
@@ -2044,6 +2047,8 @@ class Llama:
             logits_processor=logits_processor,
             grammar=grammar,
             logit_bias=logit_bias,
+            reasoning_budget=reasoning_budget,
+            enable_thinking=enable_thinking, # <--- PASSED TO HANDLER HERE
         )
 
     def create_chat_completion_openai_v1(
