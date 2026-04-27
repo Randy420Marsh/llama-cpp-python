@@ -1653,9 +1653,9 @@ def functionary_chat_handler(
                 message["name"] = f"functions.{message['name']}"
             # Function call requests by assistant
             if "function_call" in message:
-                message["function_call"][
-                    "name"
-                ] = f"functions.{message['function_call']['name']}"
+                message["function_call"]["name"] = (
+                    f"functions.{message['function_call']['name']}"
+                )
             all_messages.append(message)
 
         all_messages.append(
@@ -1894,9 +1894,9 @@ def functionary_v1_v2_chat_handler(
     SYSTEM_MESSAGE = """A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. The assistant calls functions with appropriate input when necessary"""
 
     tokenizer = llama.tokenizer_
-    assert hasattr(
-        tokenizer, "hf_tokenizer"
-    ), "Please provide a valid hf_tokenizer_path from https://huggingface.co/meetkai when initializing the Llama class"
+    assert hasattr(tokenizer, "hf_tokenizer"), (
+        "Please provide a valid hf_tokenizer_path from https://huggingface.co/meetkai when initializing the Llama class"
+    )
     from transformers import AutoTokenizer
 
     if "<|START_OF_FUNCTION_CALL|>" in tokenizer.hf_tokenizer.additional_special_tokens:
@@ -2046,9 +2046,9 @@ def functionary_v1_v2_chat_handler(
                 message["name"] = f"functions.{message['name']}"
             # Function call requests by assistant
             if "function_call" in message:
-                message["function_call"][
-                    "name"
-                ] = f"functions.{message['function_call']['name']}"
+                message["function_call"]["name"] = (
+                    f"functions.{message['function_call']['name']}"
+                )
             all_messages.append(message)
 
         if version == "v1":
@@ -3759,6 +3759,7 @@ class MultimodalGemmaChatHandler(Llava15ChatHandler):
 # GEMMA 4 CHAT HANDLER - FULLY CORRECTED & POLISHED
 # ============================================================
 
+
 class Gemma4ChatHandler(Llava15ChatHandler):
     """Chat handler for Gemma 4 models with full multimodal and tool calling support.
 
@@ -3781,7 +3782,6 @@ class Gemma4ChatHandler(Llava15ChatHandler):
         "{% if message.role == 'system' %}"
         "<|channel>thought\n{{ message.content }}<channel|>\n"
         "{% endif %}"
-        
         # 2. User message (handles both plain string and multimodal media)
         "{% if message.role == 'user' %}"
         "<|turn>user\n"
@@ -3806,12 +3806,10 @@ class Gemma4ChatHandler(Llava15ChatHandler):
         "{% endif %}"
         "<turn|>\n"
         "{% endif %}"
-        
         # 3. Assistant message
         "{% if message.role == 'assistant' and message.content is not none %}"
         "<|turn>model\n{{ message.content }}<turn|>\n"
         "{% endif %}"
-        
         # 4. Tool Calls (Agentic Workflow Handshakes)
         "{% if message.role == 'assistant' and message.tool_calls %}"
         "<|turn>model\n"
@@ -3820,13 +3818,11 @@ class Gemma4ChatHandler(Llava15ChatHandler):
         "{% endfor %}"
         "<turn|>\n"
         "{% endif %}"
-        
         # 5. Tool Responses
         "{% if message.role == 'tool' %}"
         "<|tool_response>response:{{ message.name }}{{ message.content }}<tool_response|>\n"
         "{% endif %}"
         "{% endfor %}"
-        
         # 6. Generation prompt
         "{% if add_generation_prompt %}"
         "<|turn>model\n"
@@ -3834,10 +3830,12 @@ class Gemma4ChatHandler(Llava15ChatHandler):
     )
 
     @staticmethod
-    def get_image_urls(messages: List[llama_types.ChatCompletionRequestMessage]) -> List[str]:
+    def get_image_urls(
+        messages: List[llama_types.ChatCompletionRequestMessage],
+    ) -> List[str]:
         """
         Overrides the base Llava15ChatHandler method.
-        Extracts both image URLs and audio base64 data strings so they can be processed 
+        Extracts both image URLs and audio base64 data strings so they can be processed
         and replaced by the mtmd C++ media marker embeddings in the backend.
         """
         media_urls: List[str] = []
@@ -3845,49 +3843,52 @@ class Gemma4ChatHandler(Llava15ChatHandler):
             if message["role"] == "user" and message.get("content"):
                 for content in message["content"]:
                     if isinstance(content, dict) and "type" in content:
-                        
                         # Extract Vision
                         if content["type"] == "image_url":
-                            if isinstance(content["image_url"], dict) and "url" in content["image_url"]:
+                            if (
+                                isinstance(content["image_url"], dict)
+                                and "url" in content["image_url"]
+                            ):
                                 media_urls.append(content["image_url"]["url"])
                             else:
                                 media_urls.append(content["image_url"])
-                                
+
                         # Extract Audio (Supports OpenAI's 'input_audio' AND custom 'audio' schemas)
                         elif content["type"] in ["input_audio", "audio"]:
-                            audio_data = content.get("input_audio") or content.get("audio")
+                            audio_data = content.get("input_audio") or content.get(
+                                "audio"
+                            )
                             if audio_data:
                                 fmt = audio_data.get("format", "wav")
                                 data = audio_data.get("data", "")
                                 # Standardize the output so `load_image` successfully base64-decodes the bytes
                                 media_urls.append(f"data:audio/{fmt};base64,{data}")
-                                
+
         return media_urls
 
     def __call__(self, **kwargs):
         """
-        Overrides the __call__ pipeline to dynamically intercept and enable Thinking Mode 
+        Overrides the __call__ pipeline to dynamically intercept and enable Thinking Mode
         by injecting the required control token seamlessly into the Jinja template.
         Also performs state clearing for reliable multimodal (vision + audio) support
         across multiple chat turns, matching other vision handlers like Qwen25VL.
         """
         enable_thinking = kwargs.get("enable_thinking", False)
         original_format = self.CHAT_FORMAT
-        
+
         if enable_thinking:
-            # Inject <|think|> into BOTH the initial system thought channel AND 
+            # Inject <|think|> into BOTH the initial system thought channel AND
             # the assistant generation prompt so thinking starts the response turn.
             # This follows Gemma 4 docs for triggering native thinking mode.
             modified_format = original_format.replace(
-                "<|channel>thought\n", 
-                "<|channel>thought\n<|think|>\n"
+                "<|channel>thought\n", "<|channel>thought\n<|think|>\n"
             ).replace(
                 "{% if add_generation_prompt %}\n<|turn>model\n{% endif %}",
-                "{% if add_generation_prompt %}\n<|turn>model\n<|think|>\n{% endif %}"
+                "{% if add_generation_prompt %}\n<|turn>model\n<|think|>\n{% endif %}",
             )
             self.CHAT_FORMAT = modified_format
-            
-            # Gemma requires a system block for the thought channel to exist. 
+
+            # Gemma requires a system block for the thought channel to exist.
             # If the user hasn't provided one, we dynamically append a blank one.
             messages = kwargs.get("messages", [])
             if not any(m.get("role") == "system" for m in messages):
@@ -3915,11 +3916,17 @@ class Gemma4ChatHandler(Llava15ChatHandler):
             # Note: Since Gemma 4 outputs thinking + final answer in a single generation,
             # 'thinking' currently holds the full generated text (including reasoning).
             # Future: parse on model-specific end-of-thinking markers (e.g. <|end_think|>) if emitted.
-            if enable_thinking and not kwargs.get("stream", False) and isinstance(result, dict):
+            if (
+                enable_thinking
+                and not kwargs.get("stream", False)
+                and isinstance(result, dict)
+            ):
                 for choice in result.get("choices", []):
                     if "message" in choice:
                         content = choice["message"].get("content", "") or ""
-                        choice["message"]["thinking"] = content  # structured access for test app
+                        choice["message"]["thinking"] = (
+                            content  # structured access for test app
+                        )
                         # content remains the complete response (thinking + final answer) for compatibility
             return result
         finally:
@@ -4044,7 +4051,9 @@ def chatml_function_calling(
     stop = (
         [stop, "<|im_end|>"]
         if isinstance(stop, str)
-        else stop + ["<|im_end|>"] if stop else ["<|im_end|>"]
+        else stop + ["<|im_end|>"]
+        if stop
+        else ["<|im_end|>"]
     )
 
     # Case 1: No tool choice by user

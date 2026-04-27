@@ -1974,7 +1974,7 @@ class Llama:
         logprobs: Optional[bool] = None,
         top_logprobs: Optional[int] = None,
         reasoning_budget: Optional[int] = None,
-        enable_thinking: bool = False, # <--- FIXED SYNTAX ERROR HERE
+        enable_thinking: bool = False,  # <--- FIXED SYNTAX ERROR HERE
     ) -> Union[
         CreateChatCompletionResponse, Iterator[CreateChatCompletionStreamResponse]
     ]:
@@ -2048,7 +2048,7 @@ class Llama:
             grammar=grammar,
             logit_bias=logit_bias,
             reasoning_budget=reasoning_budget,
-            enable_thinking=enable_thinking, # <--- PASSED TO HANDLER HERE
+            enable_thinking=enable_thinking,  # <--- PASSED TO HANDLER HERE
         )
 
     def create_chat_completion_openai_v1(
