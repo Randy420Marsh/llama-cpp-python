@@ -1,1 +1,10 @@
+git submodule update --init --recursive
 export FORCE_CMAKE=1 && CMAKE_ARGS="-DGGML_CUDA=on" pip install -e .
+
+or build wheel:
+
+python -m build --wheel
+
+auditwheel show dist/llama_cpp_python-*.whl
+
+auditwheel repair dist/llama_cpp_python-*.whl
